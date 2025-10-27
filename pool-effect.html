@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pool Effect</title>
+  <style>
+    @font-face {
+      font-family: "Overused Grotesk";
+      src: url("https://assets.unicorn.studio/fonts/studio_picks/Overused%20Grotesk%2FOverusedGrotesk-Light.otf") format("opentype");
+      font-weight: 200 700;
+      font-display: swap;
+    }
+
+    :root {
+      color-scheme: dark;
+      font-family: "Overused Grotesk", "Poppins", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #04192e;
+      overflow: hidden;
+    }
+
+    canvas#pool {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: pointer;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      perspective: 1200px;
+      pointer-events: none;
+      padding: 8vh 4vw;
+      color: rgba(218, 244, 255, 0.9);
+      text-align: center;
+      mix-blend-mode: screen;
+    }
+
+    .overlay-inner {
+      transform-style: preserve-3d;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      align-items: center;
+    }
+
+    .title {
+      font-size: clamp(3.4rem, 9vw, 8.8rem);
+      letter-spacing: 0.22em;
+      font-weight: 300;
+      text-transform: uppercase;
+      margin: 0;
+      position: relative;
+    }
+
+    .title span {
+      display: inline-block;
+      transform-origin: center;
+      transition: transform 0.25s ease;
+      filter: drop-shadow(0 0 18px rgba(0, 34, 68, 0.55));
+    }
+
+    .subtitle {
+      font-size: clamp(0.75rem, 1.9vw, 1.1rem);
+      letter-spacing: 0.6rem;
+      text-transform: uppercase;
+      opacity: 0.75;
+    }
+
+    .cta {
+      font-size: clamp(0.65rem, 1.2vw, 0.95rem);
+      letter-spacing: 0.4rem;
+      text-transform: uppercase;
+      opacity: 0.5;
+    }
+
+    .logo-tag {
+      font-size: clamp(0.5rem, 0.8vw, 0.75rem);
+      letter-spacing: 0.35rem;
+      opacity: 0.35;
+      margin-top: 0.5rem;
+    }
+
+    .fallback {
+      position: fixed;
+      inset: 0;
+      display: none;
+      place-items: center;
+      background: radial-gradient(circle at 40% 20%, rgba(8, 42, 68, 0.95), rgba(3, 18, 32, 0.98));
+      color: #e4f4ff;
+      padding: 2.5rem;
+      text-align: center;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="pool" aria-hidden="true"></canvas>
+  <div class="overlay" aria-hidden="true">
+    <div class="overlay-inner">
+      <div class="title">POOLS</div>
+      <div class="subtitle">hover · tap · ripple</div>
+      <div class="cta">crafted for codepen · performance tuned</div>
+      <div class="logo-tag">UNOFFICIAL · UNICORN-STYLE</div>
+    </div>
+  </div>
+  <div class="fallback" hidden aria-hidden="true">
+    WebGL2 is required to view this pool effect.<br />
+    Please try again in a modern browser.
+  </div>
+  <script>
+    (() => {
+      const canvas = document.getElementById("pool");
+      const overlayInner = document.querySelector(".overlay-inner");
+      const title = document.querySelector(".title");
+      const fallback = document.querySelector(".fallback");
+
+      if (!canvas || !overlayInner || !title) {
+        return;
+      }
+
+      const gl = canvas.getContext("webgl2", {
+        antialias: false,
+        alpha: false,
+        powerPreference: "high-performance",
+        preserveDrawingBuffer: false,
+      });
+
+      if (!gl) {
+        if (fallback) {
+          fallback.hidden = false;
+          fallback.style.display = "grid";
+        }
+        canvas.style.display = "none";
+        return;
+      }
+
+      const hasColorBufferFloat = !!gl.getExtension("EXT_color_buffer_float");
+      const hasColorBufferHalfFloat = !!gl.getExtension("EXT_color_buffer_half_float");
+      gl.getExtension("OES_texture_float_linear");
+
+      const DPR = Math.min(window.devicePixelRatio || 1, 2.5);
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.disable(gl.BLEND);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+
+      let renderTextureType = hasColorBufferFloat ? gl.FLOAT : gl.HALF_FLOAT;
+      let simulationTextureType = renderTextureType;
+      let preferFloatTargets = hasColorBufferFloat;
+
+      const vertexSource = `#version 300 es
+        precision highp float;
+        const vec2 POS[3] = vec2[](
+          vec2(-1.0, -1.0),
+          vec2(3.0, -1.0),
+          vec2(-1.0, 3.0)
+        );
+        out vec2 vTextureCoord;
+        out vec3 vVertexPosition;
+        void main() {
+          vec2 pos = POS[gl_VertexID];
+          vTextureCoord = pos * 0.5 + 0.5;
+          vVertexPosition = vec3(vTextureCoord, 0.0);
+          gl_Position = vec4(pos, 0.0, 1.0);
+        }
+      `;
+
+      const shaderSources = {
+        gradient: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+uniform vec2 uMousePos;
+vec3 getColor(int index) {
+  switch(index) {
+    case 0: return vec3(0.0, 0.14901960784313725, 0.3176470588235294);
+    default: return vec3(0.0);
+  }
+}
+const float PI = 3.14159265;
+vec2 rotate(vec2 coord, float angle) {
+  float s = sin(angle);
+  float c = cos(angle);
+  return vec2(coord.x * c - coord.y * s, coord.x * s + coord.y * c);
+}
+out vec4 fragColor;
+vec3 getColor(vec2 uv) {
+  return vec3(0.0, 0.14901960784313725, 0.3176470588235294);
+}
+void main() {
+  vec2 uv = vTextureCoord;
+  vec2 pos = vec2(0.82719811968337, 0.8116846983151877) + mix(vec2(0.0), (uMousePos - 0.5), 0.0);
+  uv -= pos;
+  uv /= (0.5 * 2.0);
+  uv = rotate(uv, (0.0 - 0.5) * 2.0 * PI);
+  vec4 color = vec4(getColor(uv), 1.0);
+  fragColor = color;
+}
+`,
+        waterNormal: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+in vec3 vVertexPosition;
+uniform sampler2D uPingPongTexture;
+const float PI = 3.1415926;
+out vec4 fragColor;
+vec3 calculateNormal(sampler2D tex, vec2 uv) {
+  float stengthScale = mix(3.0, 7.0, 1.0);
+  float stepScale = mix(1.0, 3.0, 1.0);
+  float strength = mix(1.0, stengthScale, 0.77);
+  float stepSize = mix(1.0, stepScale, 0.77);
+  float step = stepSize / 1080.0;
+  float left = texture(tex, uv + vec2(-step, 0.0)).r;
+  float right = texture(tex, uv + vec2(step, 0.0)).r;
+  float top = texture(tex, uv + vec2(0.0, -step)).r;
+  float bottom = texture(tex, uv + vec2(0.0, step)).r;
+  vec3 normal;
+  normal.x = (right - left) * strength;
+  normal.y = -(bottom - top) * strength;
+  normal.z = -1.0;
+  return normalize(normal);
+}
+vec4 drawRipple(vec2 uv) {
+  vec2 scaled = mix(uv, (uv - 0.5) * 0.5 + 0.5, 1.0);
+  vec3 normal = calculateNormal(uPingPongTexture, scaled);
+  return vec4(normal, 1.0);
+}
+vec4 getColor(vec2 uv) {
+  return drawRipple(uv);
+}
+void main() {
+  vec2 uv = vTextureCoord;
+  vec4 color = getColor(uv);
+  fragColor = color;
+}
+`,
+        waterBlurX: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+in vec3 vVertexPosition;
+uniform sampler2D uTexture;
+const float PI = 3.1415926;
+float getGaussianWeight(int index) {
+  switch(index) {
+    case 0: return 0.7978845608028654;
+    case 1: return 0.795118932516684;
+    case 2: return 0.7868794322038799;
+    case 3: return 0.7733362336056986;
+    case 4: return 0.7547664553859864;
+    case 5: return 0.7315447328280048;
+    case 6: return 0.704130653528599;
+    case 7: return 0.6730536454899063;
+    case 8: return 0.6388960110447045;
+    case 9: return 0.6022748643096089;
+    case 10: return 0.5638237508206051;
+    case 11: return 0.5241747061566029;
+    case 12: return 0.48394144903828673;
+    case 13: return 0.443704309411472;
+    case 14: return 0.40399737110811773;
+    case 15: return 0.36529817077804383;
+    case 16: return 0.3280201493519873;
+    case 17: return 0.29250790855907144;
+    case 18: return 0.2590351913317835;
+    case 19: return 0.2278053882403838;
+    case 20: return 0.19895427758549736;
+    case 21: return 0.17255463765302306;
+    case 22: return 0.1486223271179862;
+    case 23: return 0.12712341303392466;
+    default: return 0.0;
+  }
+}
+out vec4 fragColor;
+vec4 blur(vec2 uv, vec2 dir) {
+  vec4 color = vec4(0.0);
+  float total_weight = 0.0;
+  vec4 center = texture(uTexture, uv);
+  float center_weight = getGaussianWeight(0);
+  color += center * center_weight;
+  total_weight += center_weight;
+  for (int i = 1; i <= 11; i++) {
+    float weight = getGaussianWeight(i);
+    float offset = mix(0.005, 0.015, 0.64) * float(i) / 11.0;
+    vec4 sample1 = texture(uTexture, uv + offset * dir);
+    vec4 sample2 = texture(uTexture, uv - offset * dir);
+    color += (sample1 + sample2) * weight;
+    total_weight += 2.0 * weight;
+  }
+  return color / total_weight;
+}
+vec4 getColor(vec2 uv) {
+  return blur(uv, vec2(1.0, 0.0));
+}
+void main() {
+  vec2 uv = vTextureCoord;
+  vec4 color = getColor(uv);
+  fragColor = color;
+}
+`,
+        waterBlurY: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+in vec3 vVertexPosition;
+uniform sampler2D uTexture;
+const float PI = 3.1415926;
+float getGaussianWeight(int index) {
+  switch(index) {
+    case 0: return 0.7978845608028654;
+    case 1: return 0.795118932516684;
+    case 2: return 0.7868794322038799;
+    case 3: return 0.7733362336056986;
+    case 4: return 0.7547664553859864;
+    case 5: return 0.7315447328280048;
+    case 6: return 0.704130653528599;
+    case 7: return 0.6730536454899063;
+    case 8: return 0.6388960110447045;
+    case 9: return 0.6022748643096089;
+    case 10: return 0.5638237508206051;
+    case 11: return 0.5241747061566029;
+    case 12: return 0.48394144903828673;
+    case 13: return 0.443704309411472;
+    case 14: return 0.40399737110811773;
+    case 15: return 0.36529817077804383;
+    case 16: return 0.3280201493519873;
+    case 17: return 0.29250790855907144;
+    case 18: return 0.2590351913317835;
+    case 19: return 0.2278053882403838;
+    case 20: return 0.19895427758549736;
+    case 21: return 0.17255463765302306;
+    case 22: return 0.1486223271179862;
+    case 23: return 0.12712341303392466;
+    default: return 0.0;
+  }
+}
+out vec4 fragColor;
+vec4 blur(vec2 uv, vec2 dir) {
+  vec4 color = vec4(0.0);
+  float total_weight = 0.0;
+  vec4 center = texture(uTexture, uv);
+  float center_weight = getGaussianWeight(0);
+  color += center * center_weight;
+  total_weight += center_weight;
+  for (int i = 1; i <= 11; i++) {
+    float weight = getGaussianWeight(i);
+    float offset = mix(0.005, 0.015, 0.64) * float(i) / 11.0;
+    vec4 sample1 = texture(uTexture, uv + offset * dir);
+    vec4 sample2 = texture(uTexture, uv - offset * dir);
+    color += (sample1 + sample2) * weight;
+    total_weight += 2.0 * weight;
+  }
+  return color / total_weight;
+}
+vec4 getColor(vec2 uv) {
+  return blur(uv, vec2(0.0, 1.0));
+}
+void main() {
+  vec2 uv = vTextureCoord;
+  vec4 color = getColor(uv);
+  fragColor = color;
+}
+`,
+        waterFinal: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+in vec3 vVertexPosition;
+uniform sampler2D uTexture;
+uniform sampler2D uBgTexture;
+const float PI = 3.1415926;
+const vec3 LIGHT_POS = vec3(2.0, 2.0, 3.0);
+const vec3 VIEW_POS = vec3(0.0, 0.0, 2.0);
+const float SPECULAR = 2.4;
+const float SHININESS = 128.0;
+out vec4 fragColor;
+vec2 calculateRefraction(vec3 normal, float ior) {
+  vec3 I = vec3(0.0, 0.0, 1.0);
+  float ratio = 1.0 / ior;
+  vec3 refracted = refract(I, normal, ratio);
+  float refractionScale = mix(0.2, 0.4, 1.0);
+  float refractionAmount = mix(0.01, refractionScale, 0.77);
+  return refracted.xy * refractionAmount;
+}
+vec3 chromatic(vec3 color, vec2 uv, vec2 ref) {
+  vec2 offset = (uv - vTextureCoord) * (0.25 * 0.2);
+  vec4 left = texture(uBgTexture, uv - offset);
+  vec4 right = texture(uBgTexture, uv + offset);
+  color.r = left.r;
+  color.b = right.b;
+  return color;
+}
+vec3 calculateLighting(vec3 normal, vec2 uv) {
+  vec3 worldPos = vec3(uv * 2.0 - 1.0, 0.0);
+  vec3 lightDir = normalize(LIGHT_POS - worldPos);
+  vec3 viewDir = normalize(VIEW_POS - worldPos);
+  vec3 reflectDir = reflect(-lightDir, normal);
+  float diff = max(dot(normal, lightDir), 0.0);
+  vec3 diffuse = vec3(diff);
+  float spec = pow(max(dot(viewDir, reflectDir), 0.0), SHININESS);
+  vec3 specular = vec3(spec * SPECULAR);
+  return diffuse + specular;
+}
+vec4 getRipple(vec2 uv) {
+  vec3 normal = texture(uTexture, uv).rgb;
+  vec2 refractionOffset = calculateRefraction(normal, 1.333);
+  vec2 refractedUv = uv + refractionOffset;
+  vec3 refractedNormal = texture(uTexture, refractedUv).rgb;
+  vec4 refractedColor = texture(uBgTexture, refractedUv);
+  refractedColor.rgb = chromatic(refractedColor.rgb, refractedUv, refractionOffset);
+  vec3 caustics = calculateLighting(refractedNormal, refractedUv);
+  float causticsShadow = dot(normal, normalize(vec3(2.0, -2.0, 3.0) - vec3(uv * 2.0 - 1.0, 0.0))) + 1.0;
+  float shadowFactor = mix(1.0, causticsShadow, 0.21);
+  vec3 lightingFactor = mix(vec3(0.0), caustics * vec3(0.6705882352941176, 0.8941176470588236, 1.0), 0.21);
+  vec3 finalColor = refractedColor.rgb - vec3(1.0 - shadowFactor) * vec3(0.6705882352941176, 0.8941176470588236, 1.0) + lightingFactor;
+  return vec4(finalColor, refractedColor.a);
+}
+vec4 getColor(vec2 uv) {
+  return getRipple(uv);
+}
+void main() {
+  vec2 uv = vTextureCoord;
+  vec4 color = getColor(uv);
+  fragColor = color;
+}
+`,
+        waterSim: `#version 300 es
+precision highp float;
+in vec3 vVertexPosition;
+in vec2 vTextureCoord;
+uniform sampler2D uPingPongTexture;
+uniform vec2 uPreviousMousePos;
+uniform vec2 uMousePos;
+uniform vec2 uResolution;
+uniform vec4 uPulse;
+const float PI = 3.1415926;
+out vec4 fragColor;
+void main() {
+  vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+  vec2 texelSize = (1.0 / (vec2(1080.0) * aspect)) * mix(1.0, 8.0, 0.75);
+  vec2 vUv = vTextureCoord;
+  vec2 mPos = mix(uMousePos, (uMousePos - 0.5) * 0.5 + 0.5, 1.0);
+  vec2 pmPos = mix(uPreviousMousePos, (uPreviousMousePos - 0.5) * 0.5 + 0.5, 1.0);
+  float waveSpeed = 1.0;
+  float damping = mix(0.8, 0.999, 0.75);
+  float velocityDamping = damping;
+  float heightDamping = damping;
+  float time = 0.5;
+  vec4 data = texture(uPingPongTexture, vUv);
+  float height = data.r;
+  float velocity = data.g;
+  float laplacian = 0.0;
+  float totalWeight = 0.0;
+  float scaleDiff = 1.0 * 0.25;
+  vec2 clampRegionMin = vec2(1.0 * 0.5 - scaleDiff);
+  vec2 clampRegionMax = vec2(1.0 - 1.0 * 0.5 + scaleDiff);
+  vec2 offset = vec2(texelSize.x, 0.0);
+  vec2 neighborUv = clamp(vUv + offset, clampRegionMin, clampRegionMax);
+  float weight = 1.0 - length(offset) / (length(texelSize) * 2.0);
+  laplacian += texture(uPingPongTexture, neighborUv).r * weight;
+  totalWeight += weight;
+  offset = vec2(-texelSize.x, 0.0);
+  neighborUv = clamp(vUv + offset, clampRegionMin, clampRegionMax);
+  weight = 1.0 - length(offset) / (length(texelSize) * 2.0);
+  laplacian += texture(uPingPongTexture, neighborUv).r * weight;
+  totalWeight += weight;
+  offset = vec2(0.0, texelSize.y);
+  neighborUv = clamp(vUv + offset, clampRegionMin, clampRegionMax);
+  weight = 1.0 - length(offset) / (length(texelSize) * 2.0);
+  laplacian += texture(uPingPongTexture, neighborUv).r * weight;
+  totalWeight += weight;
+  offset = vec2(0.0, -texelSize.y);
+  neighborUv = clamp(vUv + offset, clampRegionMin, clampRegionMax);
+  weight = 1.0 - length(offset) / (length(texelSize) * 2.0);
+  laplacian += texture(uPingPongTexture, neighborUv).r * weight;
+  totalWeight += weight;
+  float avgNeighbors = laplacian / totalWeight;
+  laplacian = avgNeighbors - height;
+  velocity += waveSpeed * waveSpeed * laplacian;
+  velocity *= velocityDamping;
+  height += velocity;
+  height *= heightDamping;
+  float mouseSpeed = distance(mPos * aspect, pmPos * aspect);
+  float dist = distance(vUv * aspect, mPos * aspect);
+  float radius = 0.025;
+  if (dist < radius && mouseSpeed > 0.0001) {
+    float drop = cos(dist / radius * PI * time);
+    float intensity = mouseSpeed * 20.0;
+    height += drop * intensity;
+  }
+  if (uPulse.w > 0.0001) {
+    vec2 pulsePos = mix(uPulse.xy, (uPulse.xy - 0.5) * 0.5 + 0.5, 1.0);
+    float pulseRadius = max(uPulse.z, 0.0001);
+    float pulseDist = distance(vUv * aspect, pulsePos * aspect);
+    if (pulseDist < pulseRadius) {
+      float dropPulse = cos(pulseDist / pulseRadius * PI * time);
+      height += dropPulse * uPulse.w;
+    }
+  }
+  fragColor = vec4(height, velocity, 0.0, 1.0);
+}
+`,
+        caustics: `#version 300 es
+precision highp float;
+in vec3 vVertexPosition;
+in vec2 vTextureCoord;
+uniform sampler2D uTexture;
+uniform float uTime;
+uniform vec2 uMousePos;
+uniform vec2 uResolution;
+vec4 permute(vec4 t) { return t * (t * 34.0 + 133.0); }
+vec3 grad(float hash) {
+  vec3 cube = mod(floor(hash / vec3(1.0, 2.0, 4.0)), 2.0) * 2.0 - 1.0;
+  vec3 cuboct = cube;
+  float index0 = step(0.0, 1.0 - floor(hash / 16.0));
+  float index1 = step(0.0, floor(hash / 16.0) - 1.0);
+  cuboct.x *= 1.0 - index0;
+  cuboct.y *= 1.0 - index1;
+  cuboct.z *= 1.0 - (1.0 - index0 - index1);
+  float type = mod(floor(hash / 8.0), 2.0);
+  vec3 rhomb = (1.0 - type) * cube + type * (cuboct + cross(cube, cuboct));
+  vec3 grad = cuboct * 1.22474487139 + rhomb;
+  grad *= (1.0 - 0.042942436724648037 * type) * 3.5946317686139184;
+  return grad;
+}
+vec4 bccNoiseDerivativesPart(vec3 X) {
+  vec3 b = floor(X);
+  vec4 i4 = vec4(X - b, 2.5);
+  vec3 v1 = b + floor(dot(i4, vec4(0.25)));
+  vec3 v2 = b + vec3(1.0, 0.0, 0.0) + vec3(-1.0, 1.0, 1.0) * floor(dot(i4, vec4(-0.25, 0.25, 0.25, 0.35)));
+  vec3 v3 = b + vec3(0.0, 1.0, 0.0) + vec3(1.0, -1.0, 1.0) * floor(dot(i4, vec4(0.25, -0.25, 0.25, 0.35)));
+  vec3 v4 = b + vec3(0.0, 0.0, 1.0) + vec3(1.0, 1.0, -1.0) * floor(dot(i4, vec4(0.25, 0.25, -0.25, 0.35)));
+  vec4 hashes = permute(mod(vec4(v1.x, v2.x, v3.x, v4.x), 289.0));
+  hashes = permute(mod(hashes + vec4(v1.y, v2.y, v3.y, v4.y), 289.0));
+  hashes = mod(permute(mod(hashes + vec4(v1.z, v2.z, v3.z, v4.z), 289.0)), 48.0);
+  vec3 d1 = X - v1;
+  vec3 d2 = X - v2;
+  vec3 d3 = X - v3;
+  vec3 d4 = X - v4;
+  vec4 a = max(0.75 - vec4(dot(d1, d1), dot(d2, d2), dot(d3, d3), dot(d4, d4)), 0.0);
+  vec4 aa = a * a;
+  vec4 aaaa = aa * aa;
+  vec3 g1 = grad(hashes.x);
+  vec3 g2 = grad(hashes.y);
+  vec3 g3 = grad(hashes.z);
+  vec3 g4 = grad(hashes.w);
+  vec4 extrapolations = vec4(dot(d1, g1), dot(d2, g2), dot(d3, g3), dot(d4, g4));
+  vec3 derivative = -8.0 * mat4x3(d1, d2, d3, d4) * (aa * a * extrapolations) + mat4x3(g1, g2, g3, g4) * aaaa;
+  return vec4(derivative, dot(aaaa, extrapolations));
+}
+vec4 bccNoiseDerivatives_XYBeforeZ(vec3 X) {
+  mat3 orthonormalMap = mat3(
+    0.788675134594813, -0.211324865405187, -0.577350269189626,
+    -0.211324865405187, 0.788675134594813, -0.577350269189626,
+    0.577350269189626, 0.577350269189626, 0.577350269189626
+  );
+  X = orthonormalMap * X;
+  vec4 result = bccNoiseDerivativesPart(X) + bccNoiseDerivativesPart(X + 144.5);
+  return vec4(result.xyz * orthonormalMap, result.w);
+}
+float ease(int easingFunc, float t) {
+  return t;
+}
+vec3 blend(int blendMode, vec3 src, vec3 dst) {
+  return 1.0 - (1.0 - src) * (1.0 - dst);
+}
+vec4 normalizeNoise(vec4 noise, float amount) {
+  return mix(noise, (noise + 0.5) * 0.5, amount);
+}
+mat2 rotate2d(float angle) {
+  return mat2(cos(angle), -sin(angle), sin(angle), cos(angle));
+}
+vec4 getNoise(vec3 p) {
+  vec4 noise = bccNoiseDerivatives_XYBeforeZ(p);
+  return normalizeNoise(noise, 0.0);
+}
+void getCaustics(vec2 uv, out vec4 outNoise, out vec3 outColor, float time) {
+  vec2 aspect = vec2(uResolution.x / uResolution.y, 1.0);
+  vec2 mPos = vec2(0.14372822299651566, 0.03765243902439008) + mix(vec2(0.0), (uMousePos - 0.5), 0.0);
+  vec2 drift = vec2(0.0, 0.0 * time * 0.0125);
+  vec2 pos = vec2(0.14372822299651566, 0.03765243902439008) + drift * rotate2d(-0.0189 * -2.0 * 3.14159265359);
+  float mDist = ease(0, max(0.0, 1.0 - distance(uv * aspect, mPos * aspect) * 4.0 * (1.0 - 0.81)));
+  uv -= pos;
+  uv = uv * aspect * rotate2d(-0.0189 * 2.0 * 3.14159265359) * vec2(1.0 - 0.0, 1.0) * 16.0 * 0.4460;
+  float refraction = mix(0.25, 1.3, 0.95);
+  vec3 p = vec3(uv, time * 0.05);
+  vec4 noise = getNoise(p);
+  vec4 baseNoise = noise;
+  vec4 balanceNoise = getNoise(p - vec3(baseNoise.xyz / 32.0) * refraction);
+  noise = getNoise(p - vec3(balanceNoise.xyz / 16.0) * refraction);
+  float balancer = (0.5 + 0.5 * balanceNoise.w);
+  float normalized = pow(0.5 + 0.5 * noise.w, 2.0);
+  float value = mix(0.0, normalized + 0.2 * (1.0 - normalized), balancer * mDist);
+  outNoise = baseNoise * mDist;
+  outColor = vec3(0.4196078431372549, 0.8235294117647058, 1.0) * value;
+}
+out vec4 fragColor;
+void main() {
+  vec2 uv = vTextureCoord;
+  vec4 causticNoise;
+  vec3 causticColor;
+  getCaustics(uv, causticNoise, causticColor, uTime);
+  vec4 color = texture(uTexture, uv + causticNoise.xy * 0.01 * 0.25);
+  vec3 blended = blend(4, color.rgb, causticColor);
+  color.rgb = mix(color.rgb, blended, 0.74);
+  fragColor = color;
+}
+`,
+        chromab: `#version 300 es
+precision highp float;
+in vec3 vVertexPosition;
+in vec2 vTextureCoord;
+uniform sampler2D uTexture;
+uniform float uTime;
+uniform vec2 uMousePos;
+uniform vec2 uResolution;
+float ease(int easingFunc, float t) { return t; }
+out vec4 fragColor;
+void main() {
+  vec2 uv = vTextureCoord;
+  float aspectRatio = uResolution.x / uResolution.y;
+  vec2 mPos = vec2(0.48519163763066203, 0.5111498257839722) + mix(vec2(0.0), (uMousePos - 0.5), 0.0);
+  vec2 pos = vec2(0.48519163763066203, 0.5111498257839722);
+  float angle = ((0.2457 + uTime * 0.05) * 360.0) * 3.1415926 / 180.0;
+  vec4 color = texture(uTexture, uv);
+  float mDist = ease(0, max(0.0, 1.0 - distance(uv * vec2(aspectRatio, 1.0), mPos * vec2(aspectRatio, 1.0)) * 4.0 * (1.0 - 1.0)));
+  vec2 dir = normalize(uv - pos);
+  float dist = length(uv - pos);
+  vec2 aberrated = 0.59 * dir * 0.03 * mix(1.0, dist * (1.0 + 0.81), 0.81);
+  aberrated *= mDist;
+  float amt = length(aberrated);
+  if (amt < 0.001) {
+    fragColor = color;
+    return;
+  }
+  vec4 left = vec4(0.0);
+  vec4 right = vec4(0.0);
+  vec4 center = vec4(0.0);
+  float steps = max(2.0, min(14.0, 24.0));
+  float invSteps = 1.0 / (steps + 1.0);
+  for (float i = 0.0; i <= steps; i++) {
+    vec2 offset = aberrated * (i * invSteps);
+    left += texture(uTexture, uv - offset) * invSteps;
+    right += texture(uTexture, uv + offset) * invSteps;
+  }
+  for (float i = 0.0; i <= steps; i++) {
+    vec2 offset = aberrated * ((i / steps) - 0.5);
+    center += texture(uTexture, uv + offset) * invSteps;
+  }
+  color.rgb = vec3(left.r, mix(color.g, center.g, 1.0), right.b);
+  color.a = max(max(left.a, center.a), right.a);
+  fragColor = color;
+}
+`,
+        copy: `#version 300 es
+precision highp float;
+in vec2 vTextureCoord;
+uniform sampler2D uTexture;
+out vec4 fragColor;
+void main() {
+  vec4 color = texture(uTexture, vTextureCoord);
+  fragColor = vec4(color.rgb, 1.0);
+}
+      `,
+      };
+      function compileShader(type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          const log = gl.getShaderInfoLog(shader) || "Unknown shader error";
+          gl.deleteShader(shader);
+          throw new Error(log);
+        }
+        return shader;
+      }
+
+      function createProgram(fragmentSource) {
+        const vertShader = compileShader(gl.VERTEX_SHADER, vertexSource);
+        const fragShader = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
+        const program = gl.createProgram();
+        gl.attachShader(program, vertShader);
+        gl.attachShader(program, fragShader);
+        gl.linkProgram(program);
+        gl.deleteShader(vertShader);
+        gl.deleteShader(fragShader);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          const log = gl.getProgramInfoLog(program) || "Unknown link error";
+          gl.deleteProgram(program);
+          throw new Error(log);
+        }
+        return {
+          program,
+          uniforms: new Map(),
+        };
+      }
+
+      function getUniformLocation(programRef, name) {
+        if (!programRef.uniforms.has(name)) {
+          const loc = gl.getUniformLocation(programRef.program, name);
+          programRef.uniforms.set(name, loc);
+        }
+        return programRef.uniforms.get(name);
+      }
+
+      function setUniform2f(programRef, name, x, y) {
+        const loc = getUniformLocation(programRef, name);
+        if (loc !== null && loc !== -1) {
+          gl.uniform2f(loc, x, y);
+        }
+      }
+
+      function setUniform1f(programRef, name, value) {
+        const loc = getUniformLocation(programRef, name);
+        if (loc !== null && loc !== -1) {
+          gl.uniform1f(loc, value);
+        }
+      }
+
+      function setTexture(programRef, name, texture, unit = 0) {
+        const loc = getUniformLocation(programRef, name);
+        if (loc !== null && loc !== -1) {
+          gl.activeTexture(gl.TEXTURE0 + unit);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.uniform1i(loc, unit);
+          return unit + 1;
+        }
+        return unit;
+      }
+
+      function setUniform4f(programRef, name, x, y, z, w) {
+        const loc = getUniformLocation(programRef, name);
+        if (loc !== null && loc !== -1) {
+          gl.uniform4f(loc, x, y, z, w);
+        }
+      }
+
+      function createRenderTarget(width, height, {
+        internalFormat = gl.RGBA16F,
+        format = gl.RGBA,
+        type = renderTextureType,
+        minFilter = gl.LINEAR,
+        magFilter = gl.LINEAR,
+        wrapS = gl.CLAMP_TO_EDGE,
+        wrapT = gl.CLAMP_TO_EDGE,
+        data = null,
+      } = {}) {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, minFilter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, magFilter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, wrapS);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, wrapT);
+        gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, data);
+
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+        if (status !== gl.FRAMEBUFFER_COMPLETE) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.bindTexture(gl.TEXTURE_2D, null);
+          gl.deleteTexture(texture);
+          gl.deleteFramebuffer(fbo);
+          throw new Error(`Framebuffer incomplete (status 0x${status.toString(16)})`);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+
+        return { texture, fbo, width, height, type };
+      }
+
+      function deleteRenderTarget(target) {
+        if (!target) return;
+        if (target.texture) gl.deleteTexture(target.texture);
+        if (target.fbo) gl.deleteFramebuffer(target.fbo);
+      }
+
+      function disposeTargets() {
+        deleteRenderTarget(gradientTarget);
+        deleteRenderTarget(normalTarget);
+        deleteRenderTarget(blurXTgt);
+        deleteRenderTarget(blurYTgt);
+        deleteRenderTarget(waterColorTarget);
+        deleteRenderTarget(causticTarget);
+        deleteRenderTarget(chromaTarget);
+        deleteRenderTarget(pingpong[0]);
+        deleteRenderTarget(pingpong[1]);
+        gradientTarget = null;
+        normalTarget = null;
+        blurXTgt = null;
+        blurYTgt = null;
+        waterColorTarget = null;
+        causticTarget = null;
+        chromaTarget = null;
+        pingpong[0] = null;
+        pingpong[1] = null;
+      }
+
+      function seedPingTexture(target, type) {
+        const total = target.width * target.height * 2;
+        const data = new Float32Array(total);
+        for (let i = 0; i < total; i += 2) {
+          data[i] = (Math.random() - 0.5) * 0.002;
+          data[i + 1] = 0.0;
+        }
+        gl.bindTexture(gl.TEXTURE_2D, target.texture);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, target.width, target.height, gl.RG, type, data);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+      }
+
+      function bindTarget(target) {
+        if (target) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+          gl.viewport(0, 0, target.width, target.height);
+        } else {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.viewport(0, 0, canvas.width, canvas.height);
+        }
+      }
+
+      const programs = {
+        gradient: createProgram(shaderSources.gradient),
+        waterNormal: createProgram(shaderSources.waterNormal),
+        waterBlurX: createProgram(shaderSources.waterBlurX),
+        waterBlurY: createProgram(shaderSources.waterBlurY),
+        waterFinal: createProgram(shaderSources.waterFinal),
+        waterSim: createProgram(shaderSources.waterSim),
+        caustics: createProgram(shaderSources.caustics),
+        chromab: createProgram(shaderSources.chromab),
+        copy: createProgram(shaderSources.copy),
+      };
+
+      const vao = gl.createVertexArray();
+      gl.bindVertexArray(vao);
+
+      let gradientTarget = null;
+      let normalTarget = null;
+      let blurXTgt = null;
+      let blurYTgt = null;
+      let waterColorTarget = null;
+      let causticTarget = null;
+      let chromaTarget = null;
+      const pingpong = [{}, {}];
+      let pingIndex = 0;
+
+      let width = 0;
+      let height = 0;
+      let sceneActive = true;
+
+      function createOrResizeTargets() {
+        width = Math.max(1, Math.floor(window.innerWidth * DPR));
+        height = Math.max(1, Math.floor(window.innerHeight * DPR));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+
+        const candidateConfigs = [];
+        if (hasColorBufferFloat) {
+          candidateConfigs.push({
+            label: "float16",
+            color: { internalFormat: gl.RGBA16F, format: gl.RGBA, type: gl.FLOAT },
+            sim: { internalFormat: gl.RG16F, format: gl.RG, type: gl.FLOAT },
+          });
+        }
+        if (hasColorBufferHalfFloat) {
+          candidateConfigs.push({
+            label: "half16",
+            color: { internalFormat: gl.RGBA16F, format: gl.RGBA, type: gl.HALF_FLOAT },
+            sim: { internalFormat: gl.RG16F, format: gl.RG, type: gl.HALF_FLOAT },
+          });
+        }
+
+        for (const config of candidateConfigs) {
+          try {
+            disposeTargets();
+
+            renderTextureType = config.color.type;
+            simulationTextureType = config.sim.type;
+
+            gradientTarget = createRenderTarget(width, height, config.color);
+            normalTarget = createRenderTarget(width, height, config.color);
+            waterColorTarget = createRenderTarget(width, height, config.color);
+            causticTarget = createRenderTarget(width, height, config.color);
+            chromaTarget = createRenderTarget(width, height, config.color);
+
+            const blurWidth = Math.max(64, Math.floor(width * 0.4));
+            const blurHeight = Math.max(64, Math.floor(height * 0.4));
+            blurXTgt = createRenderTarget(blurWidth, blurHeight, config.color);
+            blurYTgt = createRenderTarget(blurWidth, blurHeight, config.color);
+
+            const simWidth = Math.max(256, Math.floor(width * 0.65));
+            const simHeight = Math.max(256, Math.floor(height * 0.65));
+            pingpong[0] = createRenderTarget(simWidth, simHeight, config.sim);
+            pingpong[1] = createRenderTarget(simWidth, simHeight, config.sim);
+            seedPingTexture(pingpong[0], config.sim.type);
+            seedPingTexture(pingpong[1], config.sim.type);
+            pingIndex = 0;
+
+            if (fallback) {
+              fallback.hidden = true;
+              fallback.style.display = "none";
+            }
+            canvas.style.display = "block";
+            gl.viewport(0, 0, width, height);
+            preferFloatTargets = config.color.type === gl.FLOAT;
+            sceneActive = true;
+            return true;
+          } catch (error) {
+            console.warn(`Render target allocation failed for configuration '${config.label}'.`, error);
+            continue;
+          }
+        }
+
+        disposeTargets();
+        if (fallback) {
+          fallback.hidden = false;
+          fallback.style.display = "grid";
+        }
+        canvas.style.display = "none";
+        sceneActive = false;
+        return false;
+      }
+
+      if (!createOrResizeTargets()) {
+        return;
+      }
+      window.addEventListener("resize", () => {
+        if (!createOrResizeTargets()) {
+          return;
+        }
+      });
+      const pointer = {
+        x: 0.52,
+        y: 0.52,
+        prevX: 0.52,
+        prevY: 0.52,
+        lastDX: 0.0,
+        lastDY: 0.0,
+        velocity: 0.0,
+        isDown: false,
+        lastInteraction: -Infinity,
+        lastMoveTime: -Infinity,
+        pulseStrength: 0.0,
+        pulseRadius: 0.05,
+        pulseOriginX: 0.5,
+        pulseOriginY: 0.5,
+        pulseDecay: 0.82,
+        holdInterval: 0.3,
+        nextPulseTime: Number.POSITIVE_INFINITY,
+        pulseActive: false,
+      };
+
+      function updatePointerFromEvent(event) {
+        const rect = canvas.getBoundingClientRect();
+        const normX = (event.clientX - rect.left) / rect.width;
+        const normY = (event.clientY - rect.top) / rect.height;
+        const clampedX = Math.min(0.999, Math.max(0.001, normX));
+        const clampedY = Math.min(0.999, Math.max(0.001, 1.0 - normY));
+        pointer.lastDX = clampedX - pointer.x;
+        pointer.lastDY = clampedY - pointer.y;
+        pointer.velocity = Math.hypot(pointer.lastDX, pointer.lastDY);
+        pointer.x = clampedX;
+        pointer.y = clampedY;
+        const nowSeconds = performance.now() * 0.001;
+        pointer.lastInteraction = nowSeconds;
+        pointer.lastMoveTime = nowSeconds;
+      }
+
+      function triggerPulse(strength, radius) {
+        pointer.pulseStrength = Math.max(pointer.pulseStrength, strength);
+        pointer.pulseRadius = radius;
+        pointer.pulseOriginX = pointer.x;
+        pointer.pulseOriginY = pointer.y;
+        pointer.pulseActive = true;
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        pointer.isDown = true;
+        canvas.setPointerCapture(event.pointerId);
+        updatePointerFromEvent(event);
+        triggerPulse(1.15, 0.095);
+        pointer.nextPulseTime = pointer.lastInteraction + pointer.holdInterval;
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (!pointer.isDown && event.pressure === 0) {
+          updatePointerFromEvent(event);
+          pointer.isDown = false;
+        } else if (pointer.isDown) {
+          updatePointerFromEvent(event);
+          if (pointer.velocity > 0.01) {
+            triggerPulse(Math.min(0.9, pointer.velocity * 18.0), 0.07);
+            pointer.nextPulseTime = pointer.lastInteraction + pointer.holdInterval;
+          }
+        }
+      });
+
+      canvas.addEventListener("pointerup", (event) => {
+        pointer.isDown = false;
+        if (canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+        updatePointerFromEvent(event);
+        triggerPulse(0.75, 0.08);
+        pointer.nextPulseTime = Number.POSITIVE_INFINITY;
+      });
+
+      canvas.addEventListener("pointercancel", (event) => {
+        pointer.isDown = false;
+        if (canvas.hasPointerCapture && canvas.hasPointerCapture(event.pointerId)) {
+          canvas.releasePointerCapture(event.pointerId);
+        }
+        triggerPulse(0.6, 0.08);
+        pointer.nextPulseTime = Number.POSITIVE_INFINITY;
+      });
+
+      canvas.addEventListener("pointerleave", () => {
+        pointer.isDown = false;
+        triggerPulse(0.45, 0.07);
+        pointer.nextPulseTime = Number.POSITIVE_INFINITY;
+      });
+
+      const titleText = title.textContent.trim();
+      title.textContent = "";
+      const letterSpans = [];
+      for (const char of titleText.split("")) {
+        const span = document.createElement("span");
+        span.textContent = char === " " ? "\u00A0" : char;
+        title.appendChild(span);
+        letterSpans.push(span);
+      }
+
+      function applyOverlayAnimation(time) {
+        const tiltX = (pointer.y - 0.5) * 18;
+        const tiltY = (pointer.x - 0.5) * -24;
+        overlayInner.style.transform = `rotateX(${tiltX.toFixed(2)}deg) rotateY(${tiltY.toFixed(2)}deg)`;
+        const wobbleBase = time * 1.8;
+        const len = letterSpans.length;
+        for (let i = 0; i < len; i += 1) {
+          const offset = (i / len) * Math.PI * 2.0;
+          const wave = Math.sin(wobbleBase + offset) * 4.0;
+          const lift = Math.cos(wobbleBase * 0.5 + offset) * 3.0;
+          letterSpans[i].style.transform = `translate3d(0, ${wave.toFixed(2)}px, ${lift.toFixed(2)}px)`;
+        }
+      }
+
+      const start = performance.now();
+
+      function currentPing() {
+        return pingpong[pingIndex];
+      }
+
+      function nextPing() {
+        return pingpong[1 - pingIndex];
+      }
+
+      function drawTriangles() {
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      }
+
+      function animate(now) {
+        if (!sceneActive) {
+          return;
+        }
+        const elapsed = (now - start) * 0.001;
+        const autoTime = performance.now() * 0.001;
+
+        const prevX = pointer.prevX;
+        const prevY = pointer.prevY;
+        const deltaX = pointer.x - prevX;
+        const deltaY = pointer.y - prevY;
+        let previousForShaderX = prevX;
+        let previousForShaderY = prevY;
+        const movement = Math.hypot(deltaX, deltaY);
+        const minMovement = 0.004;
+
+        if (pointer.isDown && movement > 0.0 && movement < minMovement) {
+          const scale = minMovement / movement;
+          previousForShaderX = pointer.x - deltaX * scale;
+          previousForShaderY = pointer.y - deltaY * scale;
+        } else if (pointer.isDown && movement === 0.0) {
+          const dirLength = Math.hypot(pointer.lastDX, pointer.lastDY);
+          if (dirLength > 0.0) {
+            const scale = minMovement / dirLength;
+            previousForShaderX = pointer.x - pointer.lastDX * scale;
+            previousForShaderY = pointer.y - pointer.lastDY * scale;
+          }
+        }
+
+        previousForShaderX = Math.min(0.999, Math.max(0.001, previousForShaderX));
+        previousForShaderY = Math.min(0.999, Math.max(0.001, previousForShaderY));
+
+        if (!pointer.isDown && autoTime - pointer.lastInteraction > 2.5) {
+          const auto = autoTime * 0.35;
+          const autoX = 0.5 + Math.sin(auto) * 0.1;
+          const autoY = 0.56 + Math.cos(auto * 0.85) * 0.08;
+          pointer.lastDX = autoX - pointer.x;
+          pointer.lastDY = autoY - pointer.y;
+          pointer.velocity = Math.hypot(pointer.lastDX, pointer.lastDY);
+          pointer.x = autoX;
+          pointer.y = autoY;
+        }
+        if (pointer.isDown && autoTime >= pointer.nextPulseTime) {
+          triggerPulse(0.55, 0.075);
+          pointer.nextPulseTime = autoTime + pointer.holdInterval;
+        }
+        const pulseStrength = pointer.pulseActive ? pointer.pulseStrength : 0.0;
+        const pulseRadius = pointer.pulseActive ? pointer.pulseRadius : 0.0;
+        const pulseX = pointer.pulseActive ? pointer.pulseOriginX : pointer.x;
+        const pulseY = pointer.pulseActive ? pointer.pulseOriginY : pointer.y;
+
+        bindTarget(gradientTarget);
+        gl.useProgram(programs.gradient.program);
+        setUniform2f(programs.gradient, "uMousePos", pointer.x, pointer.y);
+        drawTriangles();
+
+        bindTarget(nextPing());
+        gl.useProgram(programs.waterSim.program);
+        let unit = 0;
+        unit = setTexture(programs.waterSim, "uPingPongTexture", currentPing().texture, unit);
+        setUniform2f(programs.waterSim, "uMousePos", pointer.x, pointer.y);
+        setUniform2f(programs.waterSim, "uPreviousMousePos", previousForShaderX, previousForShaderY);
+        setUniform2f(programs.waterSim, "uResolution", width, height);
+        setUniform4f(programs.waterSim, "uPulse", pulseX, pulseY, pulseRadius, pulseStrength);
+        drawTriangles();
+        pingIndex = 1 - pingIndex;
+
+        bindTarget(normalTarget);
+        gl.useProgram(programs.waterNormal.program);
+        unit = 0;
+        setTexture(programs.waterNormal, "uPingPongTexture", currentPing().texture, unit);
+        drawTriangles();
+
+        bindTarget(blurXTgt);
+        gl.useProgram(programs.waterBlurX.program);
+        unit = 0;
+        setTexture(programs.waterBlurX, "uTexture", normalTarget.texture, unit);
+        drawTriangles();
+
+        bindTarget(blurYTgt);
+        gl.useProgram(programs.waterBlurY.program);
+        unit = 0;
+        setTexture(programs.waterBlurY, "uTexture", blurXTgt.texture, unit);
+        drawTriangles();
+
+        bindTarget(waterColorTarget);
+        gl.useProgram(programs.waterFinal.program);
+        unit = 0;
+        unit = setTexture(programs.waterFinal, "uTexture", blurYTgt.texture, unit);
+        setTexture(programs.waterFinal, "uBgTexture", gradientTarget.texture, unit);
+        drawTriangles();
+
+        bindTarget(causticTarget);
+        gl.useProgram(programs.caustics.program);
+        unit = 0;
+        unit = setTexture(programs.caustics, "uTexture", waterColorTarget.texture, unit);
+        setUniform1f(programs.caustics, "uTime", elapsed * 0.75);
+        setUniform2f(programs.caustics, "uMousePos", pointer.x, pointer.y);
+        setUniform2f(programs.caustics, "uResolution", width, height);
+        drawTriangles();
+
+        bindTarget(chromaTarget);
+        gl.useProgram(programs.chromab.program);
+        unit = 0;
+        unit = setTexture(programs.chromab, "uTexture", causticTarget.texture, unit);
+        setUniform1f(programs.chromab, "uTime", elapsed);
+        setUniform2f(programs.chromab, "uMousePos", pointer.x, pointer.y);
+        setUniform2f(programs.chromab, "uResolution", width, height);
+        drawTriangles();
+
+        bindTarget(null);
+        gl.useProgram(programs.copy.program);
+        setTexture(programs.copy, "uTexture", chromaTarget.texture, 0);
+        drawTriangles();
+
+        applyOverlayAnimation(elapsed);
+
+        pointer.prevX = pointer.x;
+        pointer.prevY = pointer.y;
+        if (pointer.pulseStrength > 0.0) {
+          pointer.pulseStrength *= pointer.pulseDecay;
+          if (pointer.pulseStrength < 0.01) {
+            pointer.pulseStrength = 0.0;
+            pointer.pulseActive = false;
+          }
+        }
+        pointer.velocity *= pointer.isDown ? 0.9 : 0.8;
+        pointer.lastDX *= 0.85;
+        pointer.lastDY *= 0.85;
+
+        requestAnimationFrame(animate);
+      }
+
+      requestAnimationFrame(animate);
+    })();
+  </script>
+</body>
+</html>
